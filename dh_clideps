@@ -153,6 +153,8 @@ my $cli = '/usr/bin/cli';
 my $cli_version = `$cli --version 2>&1`;
 my $cli_parser;
 my $cli_parser_paths;
+my $sn_tool;
+my $sn_tool_paths;
 my $pwd = `pwd`;
 my @allpackages = getpackages();
 chomp $pwd;
@@ -193,12 +195,16 @@ if (defined($dh{INTERNAL_MONO_FLAG}) ||
     $clr = "mono";
     $cli_parser = "$pwd/debian/tmp/usr/bin/monodis";
     $cli_parser_paths = "LD_LIBRARY_PATH=$pwd/debian/tmp/usr/lib MONO_PATH=$mono_path:$pwd/debian/tmp/usr/lib/mono/1.0:$pwd/debian/tmp/usr/lib/mono/2.0 MONO_GAC_PREFIX=$mono_gac_prefix ";
+    $sn_tool = "$pwd/debian/tmp/usr/bin/sn";
+    $sn_tool_paths = $cli_parser_paths;
     $cli_version = `LD_LIBRARY_PATH=$pwd/debian/tmp/usr/lib $pwd/debian/tmp/usr/bin/mono --version 2>&1`;
     verbose_print("Will use built Mono (debian/tmp/usr/bin/monodis) for CIL parsing.");
-} elsif (-x "/usr/bin/monodis") {
+} elsif (-x "/usr/bin/monodis" && -x "/usr/bin/sn") {
     $clr = "mono";
     $cli_parser = "/usr/bin/monodis";
     $cli_parser_paths = "MONO_PATH=$mono_path MONO_GAC_PREFIX=$mono_gac_prefix ";
+    $sn_tool = "/usr/bin/sn";
+    $sn_tool_paths = $cli_parser_paths;
     verbose_print("Will use Mono (/usr/bin/monodis) for CIL parsing.");
 } elsif (-x "/usr/bin/ildasm") {
     $clr = "pnet";
@@ -369,6 +375,12 @@ foreach my $package (@{$dh{DOPACKAGES}}) {
       # we still need at least 0.5.1, as older versions silently missed installing policy files
       $dh_ref = "cli-common (>= 0.5.1), ";
     }
+    if (needsAssemblyKeyMappingConfig($package, "$tmp/usr/share/cli-common/packages.d/$package.installcligac") &&
+	$clr eq "mono")
+    {
+      $dh_ref .= "mono-runtime-common, ";
+    }
+  }
   }
   $vm_ref .= $dh_ref;
   
@@ -785,6 +797,51 @@ sub resolvePrivateLibrary {
   }
 }
 
+sub needsAssemblyKeyMappingConfig {
+  my $package = shift;
+  my $installcligac = shift;
+  my $needs_remap = 0;
+
+  # On the off-chance that pnet happens again...
+  return 0 if (! defined $sn_tool);
+
+  local *F;
+  open(F, $installcligac);
+  while (<F>) {
+    chomp;
+    my $cmd = "LANG=C $sn_tool_paths MONO_GAC_PREFIX=\$MONO_GAC_PREFIX:"
+	. tmpdir($package)
+	. "/usr $sn_tool -q -T $_";
+    open PIPE, "$cmd |" or die "E: Cannot open pipe to strong name tool";
+
+    # This generate a single line that produces the desired results
+    $_ = <PIPE>;
+    chomp;
+
+    (undef, my $assembly_key) = split(/\s*:\s*/);
+    verbose_print("Checking key \"" .
+		  $assembly_key .
+		  "\" against remapped key list");
+
+    # We could parse these out of machine.config
+    # However, the list is short and doesn't change frequently
+    # So for now be lazy and just include the keys manually
+    if ($assembly_key eq "b77a5c561934e089" ||
+	$assembly_key eq "b03f5f7f11d50a3a" ||
+	$assembly_key eq "31bf3856ad364e35" ||
+	$assembly_key eq "7c307b91aa13d208" ||
+	$assembly_key eq "7cec85d7bea7798e" ||
+	$assembly_key eq "6d5c3888ef60e27d")
+    {
+      $needs_remap = 1;
+      verbose_print("Key \"" .
+		    $assembly_key .
+		    "\" requires mapping config");
+    }
+  }
+  close(F);
+  return $needs_remap;
+}
 =head1 SEE ALSO
 
 L<debhelper(7)>

@@ -339,10 +339,6 @@ foreach my $package (@{$dh{DOPACKAGES}}) {
     push(@{$refs{suggests}},   @{$clilibRefs{suggests}});
   }, $tmp);
 
-  $refs{depends}    = filterDuplicates($package, $refs{depends});
-  $refs{recommends} = filterDuplicates($package, $refs{recommends});
-  $refs{suggests}   = filterDuplicates($package, $refs{suggests});
-
   my $vm_ref = "";
   if (!defined($dh{R_FLAG}) && $found_exe) {
     if ($clr eq "mono") {
@@ -381,6 +377,14 @@ foreach my $package (@{$dh{DOPACKAGES}}) {
       $dh_ref .= "mono-runtime-common, ";
     }
   }
+  if (-f "$tmp/usr/share/cli-common/packages.d/$package.installcliframework") {
+    # this package uses the framework-install infrastructure
+    $dh_ref = "cli-common (>= 0.9), ";
+    my %framework_refs = resolveFrameworkRefs($package, "$tmp/usr/share/cli-common/packages.d/$package.installcliframework");
+    if ($framework_refs{failure} == 1) {
+      $failure = 1;
+    }
+    push(@{$refs{depends}}, @{$framework_refs{depends}});
   }
   $vm_ref .= $dh_ref;
   
@@ -399,6 +403,10 @@ foreach my $package (@{$dh{DOPACKAGES}}) {
     #    } (keys %depkgsFiltered)
     #);
     
+  $refs{depends}    = filterDuplicates($package, $refs{depends});
+  $refs{recommends} = filterDuplicates($package, $refs{recommends});
+  $refs{suggests}   = filterDuplicates($package, $refs{suggests});
+
   @{$refs{depends}}    = sort(@{$refs{depends}});
   @{$refs{recommends}} = sort(@{$refs{recommends}});
   @{$refs{suggests}}   = sort(@{$refs{suggests}});
@@ -795,6 +803,55 @@ sub resolvePrivateLibrary {
   } else {
     return 0;
   }
+}
+
+sub resolveFrameworkRefs {
+   my $package = shift;
+   my $framework_install = shift;
+   my %ret = ( depends => [],
+	       failure => 0 );
+
+   local *F;
+   open(F, $framework_install);
+   while (<F>) {
+     chomp;
+
+     chomp;
+     s/^\s+//;
+     s/\s+$//;
+     next if /^\#/;
+     next if /^\s*$/;
+
+     # Split on the space
+     my @p = split(/\s+/);
+
+     # Framework version is first...
+     shift @p;
+     # ...then the file to install
+     my $file = shift @p;
+
+     next if (-f tmpdir($package) . "/$file");
+
+     my $found = 0;
+
+     foreach my $binary_package (@allpackages) {
+       verbose_print("Checking $binary_package for $file");
+       if(-f tmpdir($binary_package) . "$file") {
+         verbose_print("Found framework reference in $binary_package");
+	 push(@{$ret{depends}}, $binary_package . " (= \${binary:Version})");
+	 verbose_print("pkgref is " . $ret{depends}[-1]);
+	 $found = 1;
+	 last;
+       }
+     }
+     if ($found == 0) {
+       warning("Error: could not resolve framework reference $file");
+       $ret{failure} = 1;
+     }
+   }
+   close(F);
+
+   return %ret;
 }
 
 sub needsAssemblyKeyMappingConfig {
